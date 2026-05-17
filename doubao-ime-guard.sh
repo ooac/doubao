@@ -13,7 +13,8 @@ BACKUP_PLIST="${SUPPORT_DIR}/com.apple.HIToolbox.plist.before-doubao-guard"
 LOG_FILE="${SUPPORT_DIR}/guard.log"
 LOG_MAX_LINES=1000
 LOG_TRIM_INTERVAL_SECONDS=3600
-DOUBAO_REACTIVATE_INTERVAL_SECONDS=15
+GUARD_CHECK_INTERVAL_SECONDS=5
+DOUBAO_REACTIVATE_INTERVAL_SECONDS=60
 USER_GUI="gui/$(id -u)"
 
 usage() {
@@ -397,7 +398,7 @@ status_guard() {
   [[ -f "${BACKUP_PLIST}" ]] && echo "偏好备份：${BACKUP_PLIST}" || echo "偏好备份：无"
   echo "日志文件：${LOG_FILE}"
   echo "日志策略：自动保留最近 ${LOG_MAX_LINES} 行，每小时检查一次"
-  echo "豆包重激活：每 ${DOUBAO_REACTIVATE_INTERVAL_SECONDS} 秒自动刷新一次"
+  echo "守护策略：每 ${GUARD_CHECK_INTERVAL_SECONDS} 秒检查一次，每 ${DOUBAO_REACTIVATE_INTERVAL_SECONDS} 秒轻量重激活一次"
 }
 
 dashboard_status() {
@@ -423,7 +424,7 @@ dashboard_status() {
   echo "偏好备份：${backup_state}"
   echo "日志文件：${LOG_FILE}"
   echo "日志策略：保留最近 ${LOG_MAX_LINES} 行"
-  echo "豆包重激活：每 ${DOUBAO_REACTIVATE_INTERVAL_SECONDS} 秒"
+  echo "守护策略：检查 ${GUARD_CHECK_INTERVAL_SECONDS} 秒 / 重激活 ${DOUBAO_REACTIVATE_INTERVAL_SECONDS} 秒"
   echo
 }
 
@@ -589,7 +590,7 @@ guard_loop() {
       next_log_trim_epoch=$(( now_epoch + LOG_TRIM_INTERVAL_SECONDS ))
     fi
 
-    sleep 1
+    sleep "${GUARD_CHECK_INTERVAL_SECONDS}"
   done
 }
 
