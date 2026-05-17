@@ -13,6 +13,7 @@ BACKUP_PLIST="${SUPPORT_DIR}/com.apple.HIToolbox.plist.before-doubao-guard"
 LOG_FILE="${SUPPORT_DIR}/guard.log"
 LOG_MAX_LINES=1000
 LOG_TRIM_INTERVAL_SECONDS=3600
+DOUBAO_REACTIVATE_INTERVAL_SECONDS=15
 USER_GUI="gui/$(id -u)"
 
 usage() {
@@ -22,6 +23,7 @@ usage() {
   ./doubao-ime-guard.sh menu        打开终端交互管理界面
   ./doubao-ime-guard.sh install      安装并启动：持续强制切回豆包输入法
   ./doubao-ime-guard.sh once         只立即切换一次到豆包输入法
+  ./doubao-ime-guard.sh repair       立即修复豆包显示正常但功能不可用
   ./doubao-ime-guard.sh start        启动已安装的强制守护
   ./doubao-ime-guard.sh stop         停止强制守护，但不恢复输入法设置
   ./doubao-ime-guard.sh pause [分钟] 临时暂停守护，到时间后自动恢复
@@ -32,6 +34,7 @@ usage() {
 说明：
   install 会先备份当前 com.apple.HIToolbox 偏好。
   pause 用于临时使用其他输入法，例如 pause 10 表示暂停 10 分钟。
+  repair 会短暂切到 ABC 再切回豆包，用于修复豆包输入法状态失活。
   restore 会停止守护进程、移除 LaunchAgent、恢复备份，并切回系统 ABC。
 EOF
 }
@@ -187,6 +190,19 @@ select_source() {
 select_doubao() {
   assert_doubao_available
   select_source "${DOUBAO_SOURCE_ID}"
+}
+
+reactivate_doubao() {
+  assert_doubao_available
+  select_source "${DOUBAO_SOURCE_ID}"
+}
+
+repair_doubao() {
+  assert_doubao_available
+  select_source "${ABC_SOURCE_ID}" >/dev/null 2>&1 || true
+  sleep 0.2
+  select_source "${DOUBAO_SOURCE_ID}"
+  log "已执行豆包输入法强制修复：ABC -> 豆包"
 }
 
 agent_running() {
@@ -381,6 +397,7 @@ status_guard() {
   [[ -f "${BACKUP_PLIST}" ]] && echo "偏好备份：${BACKUP_PLIST}" || echo "偏好备份：无"
   echo "日志文件：${LOG_FILE}"
   echo "日志策略：自动保留最近 ${LOG_MAX_LINES} 行，每小时检查一次"
+  echo "豆包重激活：每 ${DOUBAO_REACTIVATE_INTERVAL_SECONDS} 秒自动刷新一次"
 }
 
 dashboard_status() {
@@ -406,6 +423,7 @@ dashboard_status() {
   echo "偏好备份：${backup_state}"
   echo "日志文件：${LOG_FILE}"
   echo "日志策略：保留最近 ${LOG_MAX_LINES} 行"
+  echo "豆包重激活：每 ${DOUBAO_REACTIVATE_INTERVAL_SECONDS} 秒"
   echo
 }
 
@@ -456,19 +474,21 @@ menu_loop() {
 请选择操作：
   1) 安装并启动强制豆包输入法
   2) 立即切换一次到豆包输入法
-  3) 启动守护
-  4) 停止守护
-  5) 临时暂停守护（允许使用其他输入法）
-  6) 查看详细状态
-  7) 查看最近日志
-  8) 查看系统输入源列表
-  9) 恢复默认系统设置（停止守护并切回 ABC）
+  3) 修复豆包显示正常但功能不可用
+  4) 启动守护
+  5) 停止守护
+  6) 临时暂停守护（允许使用其他输入法）
+  7) 查看详细状态
+  8) 查看最近日志
+  9) 查看系统输入源列表
+  10) 恢复默认系统设置（停止守护并切回 ABC）
   m) 返回/刷新主菜单
+  r) 立即修复豆包不可用
   q) 退出
 EOF
     echo
     menu_choice=""
-    printf "输入选项（1-9/m/q，直接回车刷新）："
+    printf "输入选项（1-10/r/m/q，直接回车刷新）："
     read -r menu_choice || return 0
     menu_choice="$(normalize_menu_choice "${menu_choice}")"
     echo
@@ -490,36 +510,46 @@ EOF
         return_to_menu
         ;;
       3)
-        start_guard
+        repair_doubao
+        echo "已修复：已短暂切到 ABC 并重新切回豆包。"
         return_to_menu
         ;;
       4)
-        stop_guard
+        start_guard
         return_to_menu
         ;;
       5)
-        prompt_pause_minutes
+        stop_guard
         return_to_menu
         ;;
       6)
+        prompt_pause_minutes
+        return_to_menu
+        ;;
+      7)
         status_guard
         wait_main_menu_shortcut || return 0
         ;;
-      7)
+      8)
         show_logs
         wait_main_menu_shortcut || return 0
         ;;
-      8)
+      9)
         list_input_sources
         wait_main_menu_shortcut || return 0
         ;;
-      9)
+      10)
         if confirm_action "确认恢复默认系统设置吗？这会停止强制守护并切回 ABC。"; then
           restore_system
         else
           echo "已取消恢复。"
         fi
         press_enter
+        ;;
+      r|R|repair)
+        repair_doubao
+        echo "已修复：已短暂切到 ABC 并重新切回豆包。"
+        return_to_menu
         ;;
       q|Q|quit|exit)
         echo "已退出。"
@@ -536,17 +566,24 @@ EOF
 guard_loop() {
   assert_doubao_available
   log "守护循环启动"
-  local next_log_trim_epoch=$(( $(date '+%s') + LOG_TRIM_INTERVAL_SECONDS ))
+  local now_epoch
+  now_epoch="$(date '+%s')"
+  local next_log_trim_epoch=$(( now_epoch + LOG_TRIM_INTERVAL_SECONDS ))
+  local next_reactivate_epoch=$(( now_epoch + DOUBAO_REACTIVATE_INTERVAL_SECONDS ))
   while true; do
     local current
     current="$(current_source)"
+    now_epoch="$(date '+%s')"
+
     if [[ "${current}" != "${DOUBAO_SOURCE_ID}" ]]; then
       select_doubao >/dev/null 2>&1 || log "切换豆包输入法失败"
       log "检测到输入源 ${current:-未知}，已切回豆包输入法"
+      next_reactivate_epoch=$(( now_epoch + DOUBAO_REACTIVATE_INTERVAL_SECONDS ))
+    elif (( now_epoch >= next_reactivate_epoch )); then
+      reactivate_doubao >/dev/null 2>&1 || log "重新激活豆包输入法失败"
+      next_reactivate_epoch=$(( now_epoch + DOUBAO_REACTIVATE_INTERVAL_SECONDS ))
     fi
 
-    local now_epoch
-    now_epoch="$(date '+%s')"
     if (( now_epoch >= next_log_trim_epoch )); then
       trim_log
       next_log_trim_epoch=$(( now_epoch + LOG_TRIM_INTERVAL_SECONDS ))
@@ -562,6 +599,7 @@ main() {
   case "${cmd}" in
     install) install_guard ;;
     once) select_doubao; echo "已切换到豆包输入法。" ;;
+    repair) repair_doubao; echo "已修复：已短暂切到 ABC 并重新切回豆包。" ;;
     start) start_guard ;;
     stop) stop_guard ;;
     pause) pause_guard "${2:-10}" ;;
