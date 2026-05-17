@@ -474,22 +474,16 @@ menu_loop() {
     cat <<'EOF'
 请选择操作：
   1) 安装并启动强制豆包输入法
-  2) 立即切换一次到豆包输入法
-  3) 修复豆包显示正常但功能不可用
-  4) 启动守护
-  5) 停止守护
-  6) 临时暂停守护（允许使用其他输入法）
-  7) 查看详细状态
-  8) 查看最近日志
-  9) 查看系统输入源列表
-  10) 恢复默认系统设置（停止守护并切回 ABC）
+  2) 立即修复豆包不可用
+  3) 查看详细状态
+  4) 查看最近日志
+  5) 恢复默认系统设置（停止守护并切回 ABC）
   m) 返回/刷新主菜单
-  r) 立即修复豆包不可用
   q) 退出
 EOF
     echo
     menu_choice=""
-    printf "输入选项（1-10/r/m/q，直接回车刷新）："
+    printf "输入选项（1-5/m/q，直接回车刷新）："
     read -r menu_choice || return 0
     menu_choice="$(normalize_menu_choice "${menu_choice}")"
     echo
@@ -506,51 +500,25 @@ EOF
         return_to_menu
         ;;
       2)
-        select_doubao
-        echo "已切换到豆包输入法。"
-        return_to_menu
-        ;;
-      3)
         repair_doubao
         echo "已修复：已短暂切到 ABC 并重新切回豆包。"
         return_to_menu
         ;;
-      4)
-        start_guard
-        return_to_menu
-        ;;
-      5)
-        stop_guard
-        return_to_menu
-        ;;
-      6)
-        prompt_pause_minutes
-        return_to_menu
-        ;;
-      7)
+      3)
         status_guard
         wait_main_menu_shortcut || return 0
         ;;
-      8)
+      4)
         show_logs
         wait_main_menu_shortcut || return 0
         ;;
-      9)
-        list_input_sources
-        wait_main_menu_shortcut || return 0
-        ;;
-      10)
+      5)
         if confirm_action "确认恢复默认系统设置吗？这会停止强制守护并切回 ABC。"; then
           restore_system
         else
           echo "已取消恢复。"
         fi
         press_enter
-        ;;
-      r|R|repair)
-        repair_doubao
-        echo "已修复：已短暂切到 ABC 并重新切回豆包。"
-        return_to_menu
         ;;
       q|Q|quit|exit)
         echo "已退出。"
