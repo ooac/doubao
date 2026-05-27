@@ -13,8 +13,8 @@ BACKUP_PLIST="${SUPPORT_DIR}/com.apple.HIToolbox.plist.before-doubao-guard"
 LOG_FILE="${SUPPORT_DIR}/guard.log"
 LOG_MAX_LINES=1000
 LOG_TRIM_INTERVAL_SECONDS=3600
-GUARD_CHECK_INTERVAL_SECONDS=5
-DOUBAO_REACTIVATE_INTERVAL_SECONDS=60
+GUARD_CHECK_INTERVAL_SECONDS=30
+REPAIR_MAX_ATTEMPTS=2
 USER_GUI="gui/$(id -u)"
 
 usage() {
@@ -35,7 +35,7 @@ usage() {
 说明：
   install 会先备份当前 com.apple.HIToolbox 偏好。
   pause 用于临时使用其他输入法，例如 pause 10 表示暂停 10 分钟。
-  repair 会短暂切到 ABC 再切回豆包，用于修复豆包输入法状态失活。
+  repair 会短暂切到 ABC 再切回豆包，并做短期验证。
   restore 会停止守护进程、移除 LaunchAgent、恢复备份，并切回系统 ABC。
 EOF
 }
@@ -193,17 +193,40 @@ select_doubao() {
   select_source "${DOUBAO_SOURCE_ID}"
 }
 
-reactivate_doubao() {
-  assert_doubao_available
-  select_source "${DOUBAO_SOURCE_ID}"
-}
-
 repair_doubao() {
+  local reason="${1:-手动修复}"
+  local attempt delay current stable
+
   assert_doubao_available
-  select_source "${ABC_SOURCE_ID}" >/dev/null 2>&1 || true
-  sleep 0.2
-  select_source "${DOUBAO_SOURCE_ID}"
-  log "已执行豆包输入法强制修复：ABC -> 豆包"
+
+  for attempt in $(seq 1 "${REPAIR_MAX_ATTEMPTS}"); do
+    select_source "${ABC_SOURCE_ID}" >/dev/null 2>&1 || true
+    sleep 0.2
+
+    if ! select_source "${DOUBAO_SOURCE_ID}" >/dev/null 2>&1; then
+      log "豆包修复失败：无法切回豆包，原因=${reason}，尝试=${attempt}/${REPAIR_MAX_ATTEMPTS}"
+      continue
+    fi
+
+    stable=1
+    for delay in 0.5 2 5; do
+      sleep "${delay}"
+      current="$(current_source)"
+      if [[ "${current}" != "${DOUBAO_SOURCE_ID}" ]]; then
+        stable=0
+        log "豆包修复验证失败：当前输入源=${current:-未知}，原因=${reason}，尝试=${attempt}/${REPAIR_MAX_ATTEMPTS}"
+        break
+      fi
+    done
+
+    if (( stable == 1 )); then
+      log "已修复豆包输入法：ABC -> 豆包，原因=${reason}，尝试=${attempt}/${REPAIR_MAX_ATTEMPTS}"
+      return 0
+    fi
+  done
+
+  log "豆包修复失败：超过最大重试次数，原因=${reason}"
+  return 1
 }
 
 agent_running() {
@@ -398,7 +421,7 @@ status_guard() {
   [[ -f "${BACKUP_PLIST}" ]] && echo "偏好备份：${BACKUP_PLIST}" || echo "偏好备份：无"
   echo "日志文件：${LOG_FILE}"
   echo "日志策略：自动保留最近 ${LOG_MAX_LINES} 行，每小时检查一次"
-  echo "守护策略：每 ${GUARD_CHECK_INTERVAL_SECONDS} 秒检查一次，每 ${DOUBAO_REACTIVATE_INTERVAL_SECONDS} 秒轻量重激活一次"
+  echo "守护策略：每 ${GUARD_CHECK_INTERVAL_SECONDS} 秒低频检查；只有异常才执行 ABC -> 豆包修复"
 }
 
 dashboard_status() {
@@ -424,7 +447,7 @@ dashboard_status() {
   echo "偏好备份：${backup_state}"
   echo "日志文件：${LOG_FILE}"
   echo "日志策略：保留最近 ${LOG_MAX_LINES} 行"
-  echo "守护策略：检查 ${GUARD_CHECK_INTERVAL_SECONDS} 秒 / 重激活 ${DOUBAO_REACTIVATE_INTERVAL_SECONDS} 秒"
+  echo "守护策略：${GUARD_CHECK_INTERVAL_SECONDS} 秒低频异常检测"
   echo
 }
 
@@ -500,8 +523,11 @@ EOF
         return_to_menu
         ;;
       2)
-        repair_doubao
-        echo "已修复：已短暂切到 ABC 并重新切回豆包。"
+        if repair_doubao "手动菜单"; then
+          echo "已修复：已短暂切到 ABC 并重新切回豆包。"
+        else
+          echo "修复失败：请查看日志，或手动切到 ABC 后再切回豆包。"
+        fi
         return_to_menu
         ;;
       3)
@@ -534,23 +560,18 @@ EOF
 
 guard_loop() {
   assert_doubao_available
-  log "守护循环启动"
   local now_epoch
   now_epoch="$(date '+%s')"
   local next_log_trim_epoch=$(( now_epoch + LOG_TRIM_INTERVAL_SECONDS ))
-  local next_reactivate_epoch=$(( now_epoch + DOUBAO_REACTIVATE_INTERVAL_SECONDS ))
+
   while true; do
     local current
     current="$(current_source)"
     now_epoch="$(date '+%s')"
 
     if [[ "${current}" != "${DOUBAO_SOURCE_ID}" ]]; then
-      select_doubao >/dev/null 2>&1 || log "切换豆包输入法失败"
-      log "检测到输入源 ${current:-未知}，已切回豆包输入法"
-      next_reactivate_epoch=$(( now_epoch + DOUBAO_REACTIVATE_INTERVAL_SECONDS ))
-    elif (( now_epoch >= next_reactivate_epoch )); then
-      reactivate_doubao >/dev/null 2>&1 || log "重新激活豆包输入法失败"
-      next_reactivate_epoch=$(( now_epoch + DOUBAO_REACTIVATE_INTERVAL_SECONDS ))
+      log "检测到输入法异常：当前输入源=${current:-未知}，准备执行 ABC -> 豆包修复"
+      repair_doubao "守护检测到 ${current:-未知}" >/dev/null 2>&1 || true
     fi
 
     if (( now_epoch >= next_log_trim_epoch )); then
@@ -568,7 +589,14 @@ main() {
   case "${cmd}" in
     install) install_guard ;;
     once) select_doubao; echo "已切换到豆包输入法。" ;;
-    repair) repair_doubao; echo "已修复：已短暂切到 ABC 并重新切回豆包。" ;;
+    repair)
+      if repair_doubao "命令行"; then
+        echo "已修复：已短暂切到 ABC 并重新切回豆包。"
+      else
+        echo "修复失败：请查看日志，或手动切到 ABC 后再切回豆包。"
+        exit 1
+      fi
+      ;;
     start) start_guard ;;
     stop) stop_guard ;;
     pause) pause_guard "${2:-10}" ;;
